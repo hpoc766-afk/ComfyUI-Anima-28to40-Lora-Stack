@@ -57,6 +57,25 @@ function fitText(ctx, text, maxWidth) {
     return `${output}…`;
 }
 
+function columnLayout(width) {
+    const margin = 10;
+    const gap = 6;
+    const toggleWidth = 34;
+    const strengthWidth = 78;
+    const deleteWidth = 26;
+    const selectWidth = Math.max(40, width - margin * 2 - toggleWidth - strengthWidth - deleteWidth - gap * 3);
+    const toggleX = margin;
+    const selectX = toggleX + toggleWidth + gap;
+    const strengthX = selectX + selectWidth + gap;
+    const deleteX = strengthX + strengthWidth + gap;
+    return { toggleWidth, selectWidth, strengthWidth, deleteWidth, toggleX, selectX, strengthX, deleteX };
+}
+
+function fitSize(node) {
+    const size = node.computeSize();
+    node.setSize([Math.max(node.size[0] || 0, DEFAULT_WIDTH), size[1]]);
+}
+
 function normalizeValue(value) {
     const source = value && typeof value === "object" ? value : {};
     const strength = Number(source.strength);
@@ -413,7 +432,7 @@ function moveRow(node, widget, offset) {
     }
     [widgets[current], widgets[target]] = [widgets[target], widgets[current]];
     renumberRows(node);
-    node.setSize(node.computeSize());
+    fitSize(node);
     markChanged(node);
 }
 
@@ -422,7 +441,7 @@ function removeRow(node, widget) {
     if (index >= 0) {
         node.widgets.splice(index, 1);
         renumberRows(node);
-        node.setSize(node.computeSize());
+        fitSize(node);
         markChanged(node);
     }
 }
@@ -476,21 +495,16 @@ function makeRowWidget(node, value = undefined, name = undefined) {
             return { ...currentValue };
         },
         draw(ctx, owner, width, y, height) {
-            const margin = 10;
-            const gap = 6;
             const rowHeight = Math.min(height || 28, 26);
-            const toggleWidth = 34;
-            const strengthWidth = 78;
-            const selectWidth = Math.max(120, width - margin * 2 - toggleWidth - strengthWidth - gap * 2);
-            const toggleX = margin;
-            const selectX = toggleX + toggleWidth + gap;
-            const strengthX = selectX + selectWidth + gap;
+            const rowWidth = owner.size?.[0] || width || DEFAULT_WIDTH;
+            const { toggleWidth, selectWidth, strengthWidth, deleteWidth, toggleX, selectX, strengthX, deleteX } = columnLayout(rowWidth);
             const midY = y + rowHeight / 2;
 
             widget.__hitAreas = {
                 toggle: [toggleX, y, toggleWidth, rowHeight],
                 select: [selectX, y, selectWidth, rowHeight],
                 strength: [strengthX, y, strengthWidth, rowHeight],
+                delete: [deleteX, y, deleteWidth, rowHeight],
             };
 
             ctx.save();
@@ -521,6 +535,17 @@ function makeRowWidget(node, value = undefined, name = undefined) {
 
                 ctx.textAlign = "center";
                 ctx.fillText(Number(currentValue.strength).toFixed(2), strengthX + strengthWidth / 2, midY);
+
+                const deleteCenterX = deleteX + deleteWidth / 2;
+                ctx.strokeStyle = "#c25757";
+                ctx.lineWidth = canvasLineWidth() * 2;
+                ctx.lineCap = "round";
+                ctx.beginPath();
+                ctx.moveTo(deleteCenterX - 4, midY - 4);
+                ctx.lineTo(deleteCenterX + 4, midY + 4);
+                ctx.moveTo(deleteCenterX + 4, midY - 4);
+                ctx.lineTo(deleteCenterX - 4, midY + 4);
+                ctx.stroke();
             }
             ctx.restore();
         },
@@ -548,6 +573,10 @@ function makeRowWidget(node, value = undefined, name = undefined) {
                 editStrength(owner, widget);
                 return true;
             }
+            if (hit(widget.__hitAreas?.delete)) {
+                removeRow(owner, widget);
+                return true;
+            }
             return false;
         },
     };
@@ -573,7 +602,11 @@ function addHeaderWidget(node) {
             const rows = rowWidgets(owner);
             const allOn = rows.length > 0 && rows.every((row) => row.value.on);
             const mixed = rows.some((row) => row.value.on) && !allOn;
-            widget.__toggleBounds = [10, y + 2, 34, Math.min(20, height)];
+            const rowHeight = Math.min(height || 28, 26);
+            const rowWidth = owner.size?.[0] || width || DEFAULT_WIDTH;
+            const { toggleWidth, selectWidth, strengthWidth, toggleX, selectX, strengthX } = columnLayout(rowWidth);
+            const midY = y + rowHeight / 2;
+            widget.__toggleBounds = [toggleX, y, toggleWidth, rowHeight];
             ctx.save();
             ctx.fillStyle = LiteGraph.WIDGET_BGCOLOR;
             ctx.strokeStyle = LiteGraph.WIDGET_OUTLINE_COLOR;
@@ -584,16 +617,16 @@ function addHeaderWidget(node) {
             ctx.stroke();
             ctx.fillStyle = mixed ? "#d6b45c" : (allOn ? "#7bd88f" : "#777");
             ctx.beginPath();
-            ctx.arc(27, y + 12, 6, 0, Math.PI * 2);
+            ctx.arc(toggleX + toggleWidth / 2, midY, 6, 0, Math.PI * 2);
             ctx.fill();
             if (!isLowQuality()) {
                 ctx.fillStyle = LiteGraph.WIDGET_SECONDARY_TEXT_COLOR || LiteGraph.WIDGET_TEXT_COLOR;
                 ctx.font = "12px sans-serif";
                 ctx.textAlign = "left";
                 ctx.textBaseline = "middle";
-                ctx.fillText("全部启用/禁用", 52, y + 12);
+                ctx.fillText("全部启用/禁用", selectX + 10, midY);
                 ctx.textAlign = "center";
-                ctx.fillText("MODEL Strength", width - 56, y + 12);
+                ctx.fillText("MODEL Strength", strengthX + strengthWidth / 2, midY);
             }
             ctx.restore();
         },
@@ -625,7 +658,7 @@ function addButton(node) {
     node.addWidget("button", "+ Add LoRA", null, () => {
         makeRowWidget(node);
         renumberRows(node);
-        node.setSize(node.computeSize());
+        fitSize(node);
         markChanged(node);
     }, { serialize: false });
 }
@@ -637,11 +670,17 @@ app.registerExtension({
             return;
         }
 
+        const originalComputeSize = nodeType.prototype.computeSize;
+        nodeType.prototype.computeSize = function (...args) {
+            const size = [...originalComputeSize.apply(this, args)];
+            size[0] = Math.max(size[0], DEFAULT_WIDTH);
+            return size;
+        };
+
         const originalCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const result = originalCreated?.apply(this, arguments);
             this.title = "Anima 28→40 Power LoRA Stack";
-            this.size[0] = Math.max(this.size[0], DEFAULT_WIDTH);
 
             const catalogWidget = this.widgets?.find((widget) => widget.name === "_lora_catalog");
             this.__animaLoraCatalog = catalogWidget?.options?.values
@@ -649,6 +688,7 @@ app.registerExtension({
                 : [];
             if (catalogWidget) {
                 catalogWidget.type = "hidden";
+                catalogWidget.hidden = true;
                 catalogWidget.computeSize = () => [0, -4];
                 catalogWidget.serializeValue = () => null;
             }
@@ -656,7 +696,8 @@ app.registerExtension({
             addHeaderWidget(this);
             makeRowWidget(this);
             addButton(this);
-            this.setSize(this.computeSize());
+            this.size[0] = DEFAULT_WIDTH;
+            fitSize(this);
             return result;
         };
 
@@ -681,8 +722,8 @@ app.registerExtension({
                     removeRow(this, rowWidgets(this).at(-1));
                 }
                 renumberRows(this);
-                this.setSize(this.computeSize());
             }
+            fitSize(this);
             return result;
         };
     },

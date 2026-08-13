@@ -1,4 +1,4 @@
-﻿# Anima 28→40 Power LoRA Stack
+# Anima 28→40 Power LoRA Stack
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
@@ -46,6 +46,17 @@ Restart ComfyUI after installation. No additional Python packages or rgthree ins
 6. Connect the output `MODEL` to the downstream sampling workflow. The output `CLIP` is the original input object.
 
 Each row's context menu supports enable/disable, move up, move down, and delete. The node also provides a top-level control for enabling or disabling all rows.
+
+Clicking a LoRA field opens a searchable picker. Search is case-insensitive, matches both file names and subfolder paths, and supports keyboard navigation with `?`, `?`, `Enter`, and `Esc`. The picker is rendered in screen space, so it remains readable regardless of the ComfyUI canvas zoom level.
+
+
+## Examples
+
+The following images were generated with the node and retain sanitized ComfyUI workflow metadata. You can download either PNG and drag it onto the ComfyUI canvas to inspect the example workflow. The referenced model and LoRA files are not included.
+
+| Two-LoRA stack | Three-LoRA stack |
+| --- | --- |
+| ![Example generated with two stacked Anima LoRAs](examples/anima-power-lora-stack-two-loras.png) | ![Example generated with three stacked Anima LoRAs](examples/anima-power-lora-stack-three-loras.png) |
 
 ## Remapping Behavior
 

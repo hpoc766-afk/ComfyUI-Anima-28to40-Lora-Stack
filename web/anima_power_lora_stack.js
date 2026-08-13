@@ -1,8 +1,24 @@
-﻿import { app } from "../../scripts/app.js";
+import { app } from "../../scripts/app.js";
 
 const NODE_CLASS = "Anima28To40PowerLoraStack";
 const ROW_PREFIX = "lora_";
 const DEFAULT_WIDTH = 430;
+const SEARCH_STYLE_ID = "anima-lora-search-style";
+const SEARCH_RESULT_LIMIT = 250;
+let activeLoraChooser = null;
+
+function canvasScale() {
+    const scale = Number(app.canvas?.ds?.scale);
+    return Number.isFinite(scale) && scale > 0 ? scale : 1;
+}
+
+function canvasLineWidth() {
+    return 1 / canvasScale();
+}
+
+function isLowQuality() {
+    return canvasScale() < 0.5;
+}
 
 function rowWidgets(node) {
     return (node.widgets || []).filter((widget) => widget.name?.startsWith(ROW_PREFIX));
@@ -51,24 +67,320 @@ function normalizeValue(value) {
     };
 }
 
+function ensureSearchStyles(doc) {
+    if (doc.getElementById(SEARCH_STYLE_ID)) {
+        return;
+    }
+    const style = doc.createElement("style");
+    style.id = SEARCH_STYLE_ID;
+    style.textContent = `
+        .anima-lora-search-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 100000;
+            background: transparent;
+            color-scheme: dark;
+        }
+        .anima-lora-search-panel {
+            position: fixed;
+            display: flex;
+            flex-direction: column;
+            width: min(520px, calc(100vw - 24px));
+            max-height: min(620px, calc(100vh - 24px));
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            border-radius: 9px;
+            background: #202126;
+            color: #f0f1f4;
+            box-shadow: 0 12px 28px rgba(0, 0, 0, 0.38);
+            font: 13px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            transform: none !important;
+        }
+        .anima-lora-search-head {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 8px;
+            padding: 10px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+        }
+        .anima-lora-search-input {
+            min-width: 0;
+            height: 34px;
+            box-sizing: border-box;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 6px;
+            outline: none;
+            padding: 0 10px;
+            background: #15161a;
+            color: #f5f6f8;
+            font: inherit;
+        }
+        .anima-lora-search-input:focus {
+            border-color: #7bd88f;
+            box-shadow: 0 0 0 1px #7bd88f;
+        }
+        .anima-lora-search-close {
+            width: 34px;
+            height: 34px;
+            border: 0;
+            border-radius: 6px;
+            background: transparent;
+            color: #aeb2bb;
+            font: 18px/1 system-ui, sans-serif;
+            cursor: pointer;
+        }
+        .anima-lora-search-close:hover,
+        .anima-lora-search-close:focus-visible {
+            background: rgba(255, 255, 255, 0.08);
+            color: #fff;
+            outline: none;
+        }
+        .anima-lora-search-status {
+            padding: 6px 11px;
+            color: #9da2ad;
+            font-size: 11px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+        }
+        .anima-lora-search-results {
+            flex: 1 1 auto;
+            min-height: 42px;
+            overflow: auto;
+            overscroll-behavior: contain;
+            padding: 5px;
+        }
+        .anima-lora-search-item {
+            display: grid;
+            width: 100%;
+            box-sizing: border-box;
+            gap: 1px;
+            border: 0;
+            border-radius: 5px;
+            padding: 7px 9px;
+            background: transparent;
+            color: inherit;
+            text-align: left;
+            cursor: pointer;
+        }
+        .anima-lora-search-item:hover,
+        .anima-lora-search-item[data-active="true"] {
+            background: rgba(123, 216, 143, 0.14);
+        }
+        .anima-lora-search-name {
+            overflow: hidden;
+            color: #f1f2f5;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .anima-lora-search-path {
+            overflow: hidden;
+            color: #9197a2;
+            font-size: 11px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .anima-lora-search-empty {
+            padding: 18px 10px;
+            color: #9da2ad;
+            text-align: center;
+        }
+    `;
+    doc.head.append(style);
+}
+
+function searchableText(value) {
+    return value.replaceAll("\\", "/").toLocaleLowerCase();
+}
+
+function filterLoras(values, query) {
+    const terms = searchableText(query).trim().split(/\s+/).filter(Boolean);
+    if (!terms.length) {
+        return values;
+    }
+    return values.filter((value) => {
+        const candidate = searchableText(value);
+        return terms.every((term) => candidate.includes(term));
+    });
+}
+
+function splitLoraPath(value) {
+    const normalized = value.replaceAll("\\", "/");
+    const slash = normalized.lastIndexOf("/");
+    return slash < 0
+        ? { name: normalized, path: "" }
+        : { name: normalized.slice(slash + 1), path: normalized.slice(0, slash) };
+}
+
 function chooseLora(node, widget, event) {
     const values = Array.isArray(node.__animaLoraCatalog) ? node.__animaLoraCatalog : [];
     if (!values.length) {
         app.ui.dialog.show("没有发现 LoRA。请把文件放入 ComfyUI/models/loras 后刷新节点。", "Anima LoRA Stack");
         return;
     }
-    const menuItems = values.map((name) => ({
-        content: name,
-        callback: () => {
-            widget.value = { ...widget.value, lora: name };
-            markChanged(node);
-        },
-    }));
-    new LiteGraph.ContextMenu(menuItems, {
-        event,
-        title: "选择 28 层 Anima LoRA",
-        scale: Math.max(1, app.canvas?.ds?.scale || 1),
+
+    activeLoraChooser?.close();
+    const doc = event?.target?.ownerDocument || document;
+    ensureSearchStyles(doc);
+
+    const overlay = doc.createElement("div");
+    overlay.className = "anima-lora-search-overlay";
+    const panel = doc.createElement("section");
+    panel.className = "anima-lora-search-panel";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-modal", "true");
+    panel.setAttribute("aria-label", "搜索并选择 Anima LoRA");
+
+    const head = doc.createElement("div");
+    head.className = "anima-lora-search-head";
+    const input = doc.createElement("input");
+    input.className = "anima-lora-search-input";
+    input.type = "search";
+    input.placeholder = "搜索文件名或子目录…";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    const closeButton = doc.createElement("button");
+    closeButton.className = "anima-lora-search-close";
+    closeButton.type = "button";
+    closeButton.title = "关闭";
+    closeButton.setAttribute("aria-label", "关闭 LoRA 搜索");
+    closeButton.textContent = "\u00d7";
+    head.append(input, closeButton);
+
+    const status = doc.createElement("div");
+    status.className = "anima-lora-search-status";
+    const results = doc.createElement("div");
+    results.className = "anima-lora-search-results";
+    results.setAttribute("role", "listbox");
+    panel.append(head, status, results);
+    overlay.append(panel);
+
+    let visibleValues = [];
+    let activeIndex = 0;
+    let closed = false;
+
+    const close = () => {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        overlay.remove();
+        if (activeLoraChooser?.overlay === overlay) {
+            activeLoraChooser = null;
+        }
+        app.canvas?.canvas?.focus?.();
+    };
+
+    const choose = (value) => {
+        widget.value = { ...widget.value, lora: value };
+        markChanged(node);
+        close();
+    };
+
+    const setActive = (index, scroll = true) => {
+        if (!visibleValues.length) {
+            activeIndex = -1;
+            return;
+        }
+        activeIndex = Math.max(0, Math.min(index, visibleValues.length - 1));
+        const items = results.querySelectorAll(".anima-lora-search-item");
+        items.forEach((item, itemIndex) => {
+            const selected = itemIndex === activeIndex;
+            item.dataset.active = String(selected);
+            item.setAttribute("aria-selected", String(selected));
+        });
+        if (scroll) {
+            items[activeIndex]?.scrollIntoView({ block: "nearest" });
+        }
+    };
+
+    const render = () => {
+        const matched = filterLoras(values, input.value);
+        visibleValues = matched.slice(0, SEARCH_RESULT_LIMIT);
+        results.replaceChildren();
+        const suffix = matched.length > SEARCH_RESULT_LIMIT
+            ? `，仅显示前 ${SEARCH_RESULT_LIMIT} 条，请继续输入缩小范围`
+            : "";
+        status.textContent = `找到 ${matched.length} / ${values.length} 个 LoRA${suffix}`;
+
+        if (!visibleValues.length) {
+            const empty = doc.createElement("div");
+            empty.className = "anima-lora-search-empty";
+            empty.textContent = "没有匹配的 LoRA";
+            results.append(empty);
+            activeIndex = -1;
+            return;
+        }
+
+        const fragment = doc.createDocumentFragment();
+        visibleValues.forEach((value, index) => {
+            const parts = splitLoraPath(value);
+            const item = doc.createElement("button");
+            item.className = "anima-lora-search-item";
+            item.type = "button";
+            item.setAttribute("role", "option");
+            item.title = value;
+            const name = doc.createElement("span");
+            name.className = "anima-lora-search-name";
+            name.textContent = parts.name;
+            item.append(name);
+            if (parts.path) {
+                const itemPath = doc.createElement("span");
+                itemPath.className = "anima-lora-search-path";
+                itemPath.textContent = parts.path;
+                item.append(itemPath);
+            }
+            item.addEventListener("pointerenter", () => setActive(index, false));
+            item.addEventListener("click", () => choose(value));
+            fragment.append(item);
+        });
+        results.append(fragment);
+        const selectedIndex = visibleValues.indexOf(widget.value.lora);
+        setActive(selectedIndex >= 0 ? selectedIndex : 0, false);
+    };
+
+    const stopCanvasEvent = (currentEvent) => currentEvent.stopPropagation();
+    for (const type of ["pointerdown", "mousedown", "mouseup", "click", "contextmenu", "wheel"]) {
+        panel.addEventListener(type, stopCanvasEvent);
+    }
+    overlay.addEventListener("pointerdown", (currentEvent) => {
+        if (currentEvent.target === overlay) {
+            close();
+        }
     });
+    closeButton.addEventListener("click", close);
+    input.addEventListener("input", render);
+    input.addEventListener("keydown", (currentEvent) => {
+        currentEvent.stopPropagation();
+        if (currentEvent.key === "Escape") {
+            currentEvent.preventDefault();
+            close();
+        } else if (currentEvent.key === "ArrowDown") {
+            currentEvent.preventDefault();
+            setActive(activeIndex + 1);
+        } else if (currentEvent.key === "ArrowUp") {
+            currentEvent.preventDefault();
+            setActive(activeIndex - 1);
+        } else if (currentEvent.key === "Enter" && activeIndex >= 0) {
+            currentEvent.preventDefault();
+            choose(visibleValues[activeIndex]);
+        }
+    });
+
+    const root = doc.fullscreenElement || doc.body;
+    root.append(overlay);
+    activeLoraChooser = { overlay, close };
+    render();
+
+    const viewport = doc.defaultView || window;
+    const panelRect = panel.getBoundingClientRect();
+    const requestedX = Number.isFinite(event?.clientX)
+        ? event.clientX + 8
+        : (viewport.innerWidth - panelRect.width) / 2;
+    const requestedY = Number.isFinite(event?.clientY)
+        ? event.clientY + 8
+        : (viewport.innerHeight - panelRect.height) / 2;
+    panel.style.left = `${Math.max(12, Math.min(requestedX, viewport.innerWidth - panelRect.width - 12))}px`;
+    panel.style.top = `${Math.max(12, Math.min(requestedY, viewport.innerHeight - panelRect.height - 12))}px`;
+    input.focus({ preventScroll: true });
 }
 
 function editStrength(node, widget) {
@@ -185,7 +497,7 @@ function makeRowWidget(node, value = undefined, name = undefined) {
             ctx.globalAlpha = currentValue.on ? 1 : 0.48;
             ctx.strokeStyle = LiteGraph.WIDGET_OUTLINE_COLOR;
             ctx.fillStyle = LiteGraph.WIDGET_BGCOLOR;
-            ctx.lineWidth = 1;
+            ctx.lineWidth = canvasLineWidth();
 
             for (const bounds of Object.values(widget.__hitAreas)) {
                 ctx.beginPath();
@@ -199,15 +511,17 @@ function makeRowWidget(node, value = undefined, name = undefined) {
             ctx.arc(toggleX + toggleWidth / 2, midY, 6, 0, Math.PI * 2);
             ctx.fill();
 
-            ctx.font = "12px sans-serif";
-            ctx.textBaseline = "middle";
-            ctx.textAlign = "left";
-            ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
-            const label = currentValue.lora || "选择 LoRA…";
-            ctx.fillText(fitText(ctx, label, selectWidth - 20), selectX + 10, midY);
+            if (!isLowQuality()) {
+                ctx.font = "12px sans-serif";
+                ctx.textBaseline = "middle";
+                ctx.textAlign = "left";
+                ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
+                const label = currentValue.lora || "选择 LoRA…";
+                ctx.fillText(fitText(ctx, label, selectWidth - 20), selectX + 10, midY);
 
-            ctx.textAlign = "center";
-            ctx.fillText(Number(currentValue.strength).toFixed(2), strengthX + strengthWidth / 2, midY);
+                ctx.textAlign = "center";
+                ctx.fillText(Number(currentValue.strength).toFixed(2), strengthX + strengthWidth / 2, midY);
+            }
             ctx.restore();
         },
         mouse(event, pos, owner) {
@@ -266,18 +580,21 @@ function addHeaderWidget(node) {
             ctx.beginPath();
             ctx.roundRect(...widget.__toggleBounds, 7);
             ctx.fill();
+            ctx.lineWidth = canvasLineWidth();
             ctx.stroke();
             ctx.fillStyle = mixed ? "#d6b45c" : (allOn ? "#7bd88f" : "#777");
             ctx.beginPath();
             ctx.arc(27, y + 12, 6, 0, Math.PI * 2);
             ctx.fill();
-            ctx.fillStyle = LiteGraph.WIDGET_SECONDARY_TEXT_COLOR || LiteGraph.WIDGET_TEXT_COLOR;
-            ctx.font = "12px sans-serif";
-            ctx.textAlign = "left";
-            ctx.textBaseline = "middle";
-            ctx.fillText("全部启用/禁用", 52, y + 12);
-            ctx.textAlign = "center";
-            ctx.fillText("MODEL Strength", width - 56, y + 12);
+            if (!isLowQuality()) {
+                ctx.fillStyle = LiteGraph.WIDGET_SECONDARY_TEXT_COLOR || LiteGraph.WIDGET_TEXT_COLOR;
+                ctx.font = "12px sans-serif";
+                ctx.textAlign = "left";
+                ctx.textBaseline = "middle";
+                ctx.fillText("全部启用/禁用", 52, y + 12);
+                ctx.textAlign = "center";
+                ctx.fillText("MODEL Strength", width - 56, y + 12);
+            }
             ctx.restore();
         },
         mouse(event, pos, owner) {

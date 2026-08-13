@@ -1,4 +1,4 @@
-﻿# Anima 28→40 Power LoRA Stack
+# Anima 28→40 Power LoRA Stack
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
@@ -46,6 +46,16 @@ ComfyUI/custom_nodes/ComfyUI-Anima-28to40-Lora-Stack
 6. 将输出 `MODEL` 连接到后续采样节点。输出 `CLIP` 是输入对象的原样透传。
 
 每个 LoRA 行的右键菜单支持启用/禁用、上移、下移和删除。节点顶部还提供全部启用/全部禁用控制。
+
+点击 LoRA 选择区域会打开可搜索选择器。搜索不区分大小写，可匹配文件名和子目录路径，并支持使用 `↑`、`↓`、`Enter`、`Esc` 键盘操作。选择器使用屏幕空间渲染，不会跟随 ComfyUI 画布缩放而变得过大或过小。
+
+## 演示示例
+
+以下图片由本节点生成，并保留了经过清理的 ComfyUI 工作流元数据。下载任意 PNG 后拖入 ComfyUI 画布，即可查看示例工作流。示例引用的模型和 LoRA 文件不包含在仓库中。
+
+| 两条 LoRA 堆叠 | 三条 LoRA 堆叠 |
+| --- | --- |
+| ![使用两条 Anima LoRA 堆叠生成的示例](examples/anima-power-lora-stack-two-loras.png) | ![使用三条 Anima LoRA 堆叠生成的示例](examples/anima-power-lora-stack-three-loras.png) |
 
 ## 映射行为
 

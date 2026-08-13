@@ -46,7 +46,10 @@ OLD_TO_NEW = build_old_to_new_map()
 # 仅识别 Anima 主干层，避免误把 llm_adapter_blocks_* 当作主模型层。
 BLOCK_PATTERNS = (
     re.compile(r"(?P<prefix>lora_unet_blocks_)(?P<idx>\d+)(?P<suffix>_)"),
-    re.compile(r"(?P<prefix>(?:^|[./])net[./]blocks[./])(?P<idx>\d+)(?P<suffix>[./])"),
+    re.compile(
+        r"(?P<prefix>(?:^|[./])(?:diffusion_model|net)[./]blocks[./])"
+        r"(?P<idx>\d+)(?P<suffix>[./])"
+    ),
 )
 
 

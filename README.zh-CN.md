@@ -2,7 +2,34 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-这是一个独立的 ComfyUI 自定义节点包，可在内存中将 Anima 28 层 LoRA 的主模型层键映射到 40 层模型。节点提供接近 Power LoRA Loader 的紧凑堆叠界面，可按顺序直接应用多条 LoRA，不会生成或保存转换后的 `.safetensors` 文件。
+这是一个独立的 ComfyUI 自定义节点包，可在内存中将 Anima 28 层 LoRA 的主模型层键映射到 40 层模型。插件同时提供零连接全局自动映射和接近 Power LoRA Loader 的紧凑堆叠节点；两种方式都不会生成或保存转换后的 `.safetensors` 文件。
+
+## 零连接自动映射
+
+安装并重启 ComfyUI 后，插件会自动接管标准 LoRA 应用入口。使用 ComfyUI 原生 LoRA Loader 或调用相同标准 API 的第三方 Loader 时，无需添加本插件节点：
+
+1. 像平常一样加载 40 层 Anima 模型。
+2. 像平常一样把任意数量的 LoRA Loader 连接在 MODEL 链路中。
+3. 插件确认目标 MODEL 是 40 层 Anima 后，会在 LoRA 应用前自动判断结构。
+
+自动处理规则：
+
+- 支持 `lora_unet_blocks_<n>_...` 与 `diffusion_model.blocks.<n>...` 两种常见 Anima LoRA 键格式；仅含第 0–27 层的 LoRA 按 28 层格式映射到 40 层。
+- 含任意 `blocks_28` 至 `blocks_39` 的 LoRA 视为原生 40 层 LoRA，保持原样。
+- 含 `blocks_40` 或更高层号，或没有可识别 Anima 主模型层键的 LoRA 会严格报错。
+- 非 Anima 模型、不是 40 层的 Anima 模型以及纯 CLIP 调用完全透传。
+- 标准和 Bypass LoRA Loader 均支持自动映射。
+- 28 层自动映射使用只读懒加载 `Mapping` 视图，复用原 state dict 与 Tensor，不再物化第二份完整映射字典。
+- 仅使用最多 4096 项的有界 LRU 缓存保存键字符串分析结果，不缓存 LoRA state dict 或 Tensor。
+
+自动兼容范围是调用 `comfy.sd.load_lora_for_models` 或 `comfy.sd.load_bypass_lora_for_models` 的加载节点。直接操作 `ModelPatcher`，或在本插件加载前保存了旧函数引用的第三方节点，不保证自动转换。
+
+> 判定限制：如果原生 40 层 LoRA 只包含 `blocks_0` 至 `blocks_27`，且没有任何 `blocks_28` 至 `blocks_39` 权重，从键结构上无法与 28 层 LoRA 区分，因此会按 28 层格式映射。
+
+## Power LoRA Stack 节点
+
+需要在一个节点内管理多条 LoRA 时，仍可使用现有 `Anima 28→40 Power LoRA Stack`。它保留动态行、搜索、缩放适配、排序、行内删除和 CLIP 原样透传功能，并会主动绕过全局 Hook，避免二次映射。
+
 
 ## 功能特点
 
@@ -38,14 +65,22 @@ ComfyUI/custom_nodes/ComfyUI-Anima-28to40-Lora-Stack
 
 ## 使用方法
 
-1. 将原始 28 层 Anima LoRA 放入 `ComfyUI/models/loras`。
-2. 在工作流中添加 `loaders/Anima > Anima 28→40 Power LoRA Stack`。
-3. 连接 `MODEL`；工作流需要 CLIP 时再连接 `CLIP`。
-4. 点击 `+ Add LoRA`，选择 LoRA 并设置对应的 MODEL 强度。
-5. 按需添加更多条目，并按照实际应用顺序排列。
-6. 将输出 `MODEL` 连接到后续采样节点。输出 `CLIP` 是输入对象的原样透传。
+先将 LoRA 文件放入 `ComfyUI/models/loras`，再按需选择以下模式：
 
-每个 LoRA 行的右键菜单支持启用/禁用、上移、下移和删除。节点顶部还提供全部启用/全部禁用控制。
+### 自动模式——无需本插件节点
+
+1. 加载 40 层 Anima Checkpoint 或扩散模型。
+2. 像原来一样使用 ComfyUI 标准 LoRA Loader，并将其连接在 MODEL 链路中。
+3. 直接运行工作流；插件会检测目标模型，并自动映射符合条件的 28 层 LoRA。
+
+### Power 堆叠节点
+
+1. 添加 `loaders/Anima > Anima 28→40 Power LoRA Stack`。
+2. 连接 `MODEL`；工作流需要透传 CLIP 时再连接 `CLIP`。
+3. 点击 `+ Add LoRA`，选择 28 层 Anima LoRA 并设置 MODEL 强度。
+4. 按需添加更多条目、调整应用顺序，并将输出 `MODEL` 连接到后续采样节点。
+
+每个 LoRA 行的右键菜单支持启用/禁用、上移、下移和删除。节点顶部还提供全部启用/全部禁用控制。输出 `CLIP` 是输入对象的原样透传。
 
 点击 LoRA 选择区域会打开可搜索选择器。搜索不区分大小写，可匹配文件名和子目录路径，并支持使用 `↑`、`↓`、`Enter`、`Esc` 键盘操作。选择器使用屏幕空间渲染，不会跟随 ComfyUI 画布缩放而变得过大或过小。
 
@@ -78,7 +113,7 @@ ComfyUI/custom_nodes/ComfyUI-Anima-28to40-Lora-Stack
 
 `expand_manifest.json` 仅作为映射参考和测试数据保留，节点运行时不会读取该文件。
 
-## 严格校验
+## Power 节点严格校验
 
 出现以下情况时，节点会停止执行并给出明确错误：
 
@@ -88,7 +123,7 @@ ComfyUI/custom_nodes/ComfyUI-Anima-28to40-Lora-Stack
 - 选中的 LoRA 文件不存在或无法加载；
 - 动态 LoRA 条目配置无效。
 
-本节点仅支持本仓库实现的 Anima 28 层 LoRA 到 40 层模型映射，不用于其他模型架构。
+自动模式仅在可靠确认目标为 40 层 Anima MODEL 时启用；现有 Power 节点仍严格用于 Anima 28 层 LoRA 到 40 层模型映射。
 
 ## 输出说明
 

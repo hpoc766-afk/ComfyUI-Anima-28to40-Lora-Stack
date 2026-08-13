@@ -1,4 +1,4 @@
-﻿"""ComfyUI 后端节点：在线重映射并堆叠 Anima 28 层 LoRA。"""
+"""ComfyUI 后端节点：在线重映射并堆叠 Anima 28 层 LoRA。"""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import comfy.sd
 import comfy.utils
 import folder_paths
 
+from .auto_remap_hook import get_original_load_lora_for_models
 from .remap_lora_28_to_40 import LoraRemapError, remap_lora_state_dict
 
 
@@ -200,7 +201,8 @@ class Anima28To40PowerLoraStack:
 
     @staticmethod
     def _apply_lora(model: Any, cached: CachedLora, strength: float) -> Any:
-        loader = comfy.sd.load_lora_for_models
+        # state_dict 已由本节点映射，必须调用原始函数避免全局 Hook 二次映射。
+        loader = get_original_load_lora_for_models()
         parameters = inspect.signature(loader).parameters
         if "lora_metadata" in parameters:
             model, _ = loader(

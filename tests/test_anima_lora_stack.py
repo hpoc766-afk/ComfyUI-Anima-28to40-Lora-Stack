@@ -40,6 +40,17 @@ def install_comfy_stubs(lora_root: Path):
     comfy.__path__ = []
     comfy_sd = types.ModuleType("comfy.sd")
     comfy_utils = types.ModuleType("comfy.utils")
+
+    def load_lora_for_models(
+        model, clip, lora, strength_model, strength_clip, lora_metadata=None
+    ):
+        return model, clip
+
+    def load_bypass_lora_for_models(model, clip, lora, strength_model, strength_clip):
+        return model, clip
+
+    comfy_sd.load_lora_for_models = load_lora_for_models
+    comfy_sd.load_bypass_lora_for_models = load_bypass_lora_for_models
     comfy.sd = comfy_sd
     comfy.utils = comfy_utils
 
@@ -68,6 +79,15 @@ def load_backend(lora_root: Path):
         assert core_spec.loader is not None
         core_spec.loader.exec_module(core_module)
 
+        hook_name = f"{package_name}.auto_remap_hook"
+        hook_spec = importlib.util.spec_from_file_location(
+            hook_name, ROOT / "auto_remap_hook.py"
+        )
+        hook_module = importlib.util.module_from_spec(hook_spec)
+        sys.modules[hook_name] = hook_module
+        assert hook_spec.loader is not None
+        hook_spec.loader.exec_module(hook_module)
+
         backend_name = f"{package_name}.anima_lora_stack"
         backend_spec = importlib.util.spec_from_file_location(
             backend_name, ROOT / "anima_lora_stack.py"
@@ -77,7 +97,7 @@ def load_backend(lora_root: Path):
         assert backend_spec.loader is not None
         backend_spec.loader.exec_module(backend_module)
 
-    return backend_module, comfy_sd, comfy_utils
+    return backend_module, hook_module, comfy_sd, comfy_utils
 
 
 class RemapCoreTests(unittest.TestCase):
@@ -109,6 +129,21 @@ class RemapCoreTests(unittest.TestCase):
         self.assertEqual(len(remapped), len(state))
         self.assertTrue(mapped_indices.isdisjoint(self.core.INSERTION_POSITIONS))
 
+    def test_diffusion_model_dot_format_is_remapped(self):
+        value = object()
+        state = {
+            "diffusion_model.blocks.14.cross_attn.q_proj.lora_A.weight": value,
+        }
+        remapped = self.core.remap_lora_state_dict(state, source_name="dot-format")
+        self.assertNotIn(
+            "diffusion_model.blocks.14.cross_attn.q_proj.lora_A.weight",
+            remapped,
+        )
+        self.assertIs(
+            remapped["diffusion_model.blocks.20.cross_attn.q_proj.lora_A.weight"],
+            value,
+        )
+
     def test_passthrough_key_is_preserved(self):
         passthrough = object()
         state = {
@@ -139,13 +174,255 @@ class RemapCoreTests(unittest.TestCase):
             )
 
 
+class AutoRemapHookTests(unittest.TestCase):
+    def setUp(self):
+        from tempfile import TemporaryDirectory
+
+        self.temp_dir = TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+        self.backend, self.hook, self.comfy_sd, self.comfy_utils = load_backend(
+            self.root
+        )
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    @staticmethod
+    def make_model(*, image_model="anima", block_count=40, config_count=40):
+        config = types.SimpleNamespace(
+            unet_config={"image_model": image_model, "num_blocks": config_count}
+        )
+        diffusion_model = types.SimpleNamespace(blocks=[object()] * block_count)
+        base_model = types.SimpleNamespace(
+            model_config=config, diffusion_model=diffusion_model
+        )
+        return types.SimpleNamespace(model=base_model)
+
+    def test_model_detection_requires_anima_and_40_blocks(self):
+        self.assertTrue(self.hook.is_anima_40_model(self.make_model()))
+        self.assertFalse(
+            self.hook.is_anima_40_model(self.make_model(image_model="flux"))
+        )
+        self.assertFalse(
+            self.hook.is_anima_40_model(self.make_model(block_count=28))
+        )
+        self.assertFalse(self.hook.is_anima_40_model(None))
+        self.assertFalse(self.hook.is_anima_40_model(object()))
+
+    def test_model_detection_falls_back_to_config_for_wrapped_blocks(self):
+        model = self.make_model()
+        model.model.diffusion_model = types.SimpleNamespace()
+        self.assertTrue(self.hook.is_anima_40_model(model))
+
+    def test_model_detection_handles_hostile_wrappers_conservatively(self):
+        class HostileWrapper:
+            def __getattr__(self, name):
+                raise RuntimeError(f"blocked attribute: {name}")
+
+        self.assertFalse(self.hook.is_anima_40_model(HostileWrapper()))
+
+        model = self.make_model()
+        model.model.diffusion_model = HostileWrapper()
+        self.assertTrue(self.hook.is_anima_40_model(model))
+
+    def test_28_layer_lora_is_remapped_without_copying_values(self):
+        value = object()
+        passthrough = object()
+        state = {
+            "lora_unet_blocks_27_x.lora_down.weight": value,
+            "ss.global": passthrough,
+        }
+        prepared = self.hook.prepare_lora_for_anima_40(
+            state, metadata={"filename": "source.safetensors"}
+        )
+        self.assertIsNot(prepared, state)
+        self.assertIs(prepared["lora_unet_blocks_39_x.lora_down.weight"], value)
+        self.assertIs(prepared["ss.global"], passthrough)
+
+    def test_lazy_view_reuses_source_mapping_and_exposes_remapped_keys(self):
+        value = object()
+        state = {
+            "lora_unet_blocks_2_x.lora_down.weight": value,
+            "ss.global": object(),
+        }
+        prepared = self.hook.prepare_lora_for_anima_40(state)
+
+        self.assertIsInstance(prepared, self.hook.RemappedLoraView)
+        self.assertIs(prepared._source, state)
+        self.assertEqual(len(prepared), len(state))
+        self.assertEqual(
+            set(prepared),
+            {"lora_unet_blocks_3_x.lora_down.weight", "ss.global"},
+        )
+        self.assertIs(
+            prepared.get("lora_unet_blocks_3_x.lora_down.weight"),
+            value,
+        )
+        self.assertNotIn("lora_unet_blocks_2_x.lora_down.weight", prepared)
+
+    def test_lazy_view_detects_leading_zero_collision(self):
+        with self.assertRaisesRegex(self.hook.LoraRemapError, "collision.safetensors"):
+            self.hook.prepare_lora_for_anima_40(
+                {
+                    "lora_unet_blocks_0_x.alpha": object(),
+                    "lora_unet_blocks_00_x.alpha": object(),
+                },
+                metadata={"filename": "collision.safetensors"},
+            )
+
+    def test_key_cache_is_bounded_and_keeps_no_state_dict_reference(self):
+        self.hook._analyze_lora_key.cache_clear()
+        for index in range(self.hook._KEY_CACHE_SIZE + 64):
+            self.hook._analyze_lora_key(
+                f"lora_unet_blocks_0_unique_{index}.lora_down.weight"
+            )
+        info = self.hook._analyze_lora_key.cache_info()
+        self.assertEqual(info.maxsize, self.hook._KEY_CACHE_SIZE)
+        self.assertEqual(info.currsize, self.hook._KEY_CACHE_SIZE)
+
+    def test_diffusion_model_dot_format_is_classified_and_remapped(self):
+        value = object()
+        state = {
+            "diffusion_model.blocks.27.mlp.layer1.lora_B.weight": value,
+        }
+        prepared = self.hook.prepare_lora_for_anima_40(state)
+        self.assertIs(
+            prepared["diffusion_model.blocks.39.mlp.layer1.lora_B.weight"],
+            value,
+        )
+
+    def test_native_40_layer_lora_is_returned_unchanged(self):
+        state = {
+            "lora_unet_blocks_0_x.alpha": object(),
+            "lora_unet_blocks_28_x.alpha": object(),
+            "lora_unet_blocks_39_x.alpha": object(),
+        }
+        self.assertIs(self.hook.prepare_lora_for_anima_40(state), state)
+
+    def test_unsupported_or_unknown_lora_raises(self):
+        with self.assertRaisesRegex(self.hook.LoraRemapError, r"40\D"):
+            self.hook.prepare_lora_for_anima_40(
+                {"lora_unet_blocks_40_x.alpha": object()}
+            )
+        with self.assertRaisesRegex(self.hook.LoraRemapError, r"blocks_0.*blocks_39"):
+            self.hook.prepare_lora_for_anima_40({"metadata.only": object()})
+
+    def test_standard_hook_remaps_and_preserves_all_arguments(self):
+        calls = []
+
+        def original(
+            model,
+            clip,
+            lora,
+            strength_model,
+            strength_clip,
+            lora_metadata=None,
+            *,
+            extra=None,
+        ):
+            calls.append(
+                (
+                    model,
+                    clip,
+                    lora,
+                    strength_model,
+                    strength_clip,
+                    lora_metadata,
+                    extra,
+                )
+            )
+            return "model-result", "clip-result"
+
+        self.comfy_sd.load_lora_for_models = original
+        self.assertTrue(self.hook.install_global_lora_hooks())
+        wrapped = self.comfy_sd.load_lora_for_models
+        model = self.make_model()
+        clip = object()
+        metadata = {"filename": "automatic.safetensors"}
+        result = wrapped(
+            model,
+            clip,
+            {"lora_unet_blocks_2_x.alpha": object()},
+            0.75,
+            0.25,
+            metadata,
+            extra="kept",
+        )
+
+        self.assertEqual(result, ("model-result", "clip-result"))
+        self.assertEqual(len(calls), 1)
+        self.assertIn("lora_unet_blocks_3_x.alpha", calls[0][2])
+        self.assertEqual(calls[0][3:], (0.75, 0.25, metadata, "kept"))
+
+    def test_bypass_hook_remaps_and_keyword_call_is_supported(self):
+        calls = []
+
+        def original(model, clip, lora, strength_model, strength_clip, **kwargs):
+            calls.append((model, clip, lora, strength_model, strength_clip, kwargs))
+            return model, clip
+
+        self.comfy_sd.load_bypass_lora_for_models = original
+        self.hook.install_global_lora_hooks()
+        model = self.make_model()
+        self.comfy_sd.load_bypass_lora_for_models(
+            model=model,
+            clip=None,
+            lora={"lora_unet_blocks_14_x.alpha": object()},
+            strength_model=1.0,
+            strength_clip=0.0,
+            custom="kept",
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertIn("lora_unet_blocks_20_x.alpha", calls[0][2])
+        self.assertEqual(calls[0][5], {"custom": "kept"})
+
+    def test_hook_is_idempotent_and_non_target_model_is_untouched(self):
+        calls = []
+        state = {"not.anima": object()}
+
+        def original(model, clip, lora, strength_model, strength_clip, **kwargs):
+            calls.append(lora)
+            return model, clip
+
+        self.comfy_sd.load_lora_for_models = original
+        self.assertTrue(self.hook.install_global_lora_hooks())
+        wrapped = self.comfy_sd.load_lora_for_models
+        self.assertFalse(self.hook.install_global_lora_hooks())
+        self.assertIs(self.comfy_sd.load_lora_for_models, wrapped)
+
+        non_target = self.make_model(image_model="flux")
+        wrapped(non_target, None, state, 1.0, 0.0)
+        self.assertEqual(calls, [state])
+
+    def test_existing_power_node_calls_original_loader(self):
+        calls = []
+
+        def original(model, clip, lora, strength_model, strength_clip, **kwargs):
+            calls.append(lora)
+            return model, clip
+
+        self.comfy_sd.load_lora_for_models = original
+        self.hook.install_global_lora_hooks()
+        cached = self.backend.CachedLora(
+            signature=self.backend.FileSignature(1, 1),
+            state_dict={"lora_unet_blocks_39_x.alpha": object()},
+            metadata=None,
+        )
+        model = self.make_model()
+        returned = self.backend.Anima28To40PowerLoraStack._apply_lora(
+            model, cached, 1.0
+        )
+        self.assertIs(returned, model)
+        self.assertEqual(calls, [cached.state_dict])
+
+
 class BackendTests(unittest.TestCase):
     def setUp(self):
         from tempfile import TemporaryDirectory
 
         self.temp_dir = TemporaryDirectory()
         self.root = Path(self.temp_dir.name)
-        self.backend, self.comfy_sd, self.comfy_utils = load_backend(self.root)
+        self.backend, self.hook, self.comfy_sd, self.comfy_utils = load_backend(self.root)
 
     def tearDown(self):
         self.temp_dir.cleanup()

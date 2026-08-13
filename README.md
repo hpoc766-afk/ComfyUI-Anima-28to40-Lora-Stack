@@ -2,7 +2,33 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-A standalone custom node for ComfyUI that remaps Anima 28-layer LoRA backbone keys to a 40-layer model entirely in memory. Multiple LoRAs can be arranged and applied in order through a compact Power LoRA Loader-style interface, without writing converted `.safetensors` files.
+A standalone ComfyUI extension that remaps Anima 28-layer LoRA backbone keys to a 40-layer model entirely in memory. It provides both zero-connection global auto-remapping and a compact Power LoRA Loader-style stack node, without writing converted `.safetensors` files.
+
+## Zero-Connection Automatic Remapping
+
+After installation and a ComfyUI restart, the extension hooks the standard LoRA application APIs. No plugin node is required when using ComfyUI's native LoRA Loader or third-party loaders that call the same APIs:
+
+1. Load a 40-layer Anima model normally.
+2. Connect any number of LoRA loaders in the MODEL chain as usual.
+3. Before each LoRA is applied, the extension verifies the target MODEL and classifies the LoRA layout.
+
+Automatic behavior:
+
+- Both common Anima LoRA key formats, `lora_unet_blocks_<n>_...` and `diffusion_model.blocks.<n>...`, are supported; LoRAs containing only layers 0–27 are treated as 28-layer data and remapped.
+- A LoRA containing any `blocks_28` through `blocks_39` key is treated as native 40-layer data and passed through unchanged.
+- `blocks_40` or higher, or a LoRA with no recognizable Anima backbone keys, causes a strict error.
+- Non-Anima models, non-40-layer Anima models, and CLIP-only calls pass through unchanged.
+- Both standard and bypass LoRA loading APIs are covered.
+- Automatic 28-layer remapping uses a read-only lazy `Mapping` view: the original state dict and Tensor objects are reused instead of materializing a second remapped dictionary.
+- A bounded 4,096-entry LRU caches key-string analysis only; it never caches a LoRA state dict or Tensor.
+
+Automatic compatibility is limited to loaders that call `comfy.sd.load_lora_for_models` or `comfy.sd.load_bypass_lora_for_models`. Nodes that patch `ModelPatcher` directly, or capture the original function before this extension loads, are not guaranteed to be intercepted.
+
+> Detection limitation: a native 40-layer LoRA that contains only `blocks_0` through `blocks_27` and no `blocks_28` through `blocks_39` keys cannot be distinguished from a 28-layer LoRA by key structure, so it will be remapped as 28-layer data.
+
+## Power LoRA Stack Node
+
+The existing `Anima 28→40 Power LoRA Stack` remains available when you want to manage multiple LoRAs in one node. Dynamic rows, search, zoom-aware rendering, sorting, inline deletion, and CLIP pass-through are preserved. The node deliberately calls the original ComfyUI loader after its own remap to prevent double remapping by the global hook.
 
 ## Features
 
@@ -38,17 +64,24 @@ Restart ComfyUI after installation. No additional Python packages or rgthree ins
 
 ## Usage
 
-1. Place the original 28-layer Anima LoRA files under `ComfyUI/models/loras`.
-2. Add `loaders/Anima > Anima 28→40 Power LoRA Stack` to the workflow.
-3. Connect a `MODEL`; connect `CLIP` only when the workflow needs it.
-4. Click `+ Add LoRA`, choose a LoRA, and set its MODEL strength.
-5. Add more rows as needed and arrange them in the order they should be applied.
-6. Connect the output `MODEL` to the downstream sampling workflow. The output `CLIP` is the original input object.
+Place the LoRA files under `ComfyUI/models/loras`, then choose either mode:
 
-Each row's context menu supports enable/disable, move up, move down, and delete. The node also provides a top-level control for enabling or disabling all rows.
+### Automatic mode - no plugin node
 
-Clicking a LoRA field opens a searchable picker. Search is case-insensitive, matches both file names and subfolder paths, and supports keyboard navigation with `?`, `?`, `Enter`, and `Esc`. The picker is rendered in screen space, so it remains readable regardless of the ComfyUI canvas zoom level.
+1. Load a 40-layer Anima checkpoint or diffusion model.
+2. Use ComfyUI's standard LoRA Loader nodes exactly as before and connect them in the MODEL chain.
+3. Run the workflow. The extension detects the target model and remaps eligible 28-layer LoRAs automatically.
 
+### Power stack node
+
+1. Add `loaders/Anima > Anima 28→40 Power LoRA Stack`.
+2. Connect `MODEL`; connect `CLIP` only when the workflow needs pass-through.
+3. Click `+ Add LoRA`, choose a 28-layer Anima LoRA, and set its MODEL strength.
+4. Add more rows as needed, arrange their application order, and connect the output `MODEL` to the sampler path.
+
+Each LoRA row has a context menu for enable/disable, move up, move down, and remove. The node also has a global enable/disable control at the top. Its output `CLIP` is the original input object.
+
+Clicking the LoRA selector opens a searchable picker. Search is case-insensitive, matches both file names and subdirectory paths, and supports `↑`, `↓`, `Enter`, and `Esc`. The picker is rendered in screen space, so it stays usable instead of scaling with the ComfyUI canvas zoom.
 
 ## Examples
 
@@ -79,7 +112,7 @@ Keys that are not recognized as main `blocks_<index>` keys are preserved under t
 
 `expand_manifest.json` is included as a mapping reference and test fixture. The node does not read it at runtime.
 
-## Strict Validation
+## Power Node Strict Validation
 
 Execution stops with a clear error when:
 

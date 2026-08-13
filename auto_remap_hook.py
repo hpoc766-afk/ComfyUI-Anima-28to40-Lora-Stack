@@ -10,6 +10,7 @@ from typing import Any, Callable
 import comfy.sd
 
 from .remap_lora_28_to_40 import (
+    DORA_SCALE_SUFFIX,
     LoraRemapError,
     NEW_BLOCK_COUNT,
     OLD_BLOCK_COUNT,
@@ -17,6 +18,7 @@ from .remap_lora_28_to_40 import (
     denormalize_dora_key,
     find_main_block,
     normalize_dora_key,
+    reshape_dora_scale,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -146,18 +148,26 @@ class RemappedLoraView(Mapping[Any, Any]):
         if source_key is None:
             raise KeyError(key)
 
+        found = False
         try:
-            return self._source[source_key]
+            value = self._source[source_key]
+            found = True
         except KeyError:
             # 原始 LoRA 可能把 DoRA 幅度向量存为 .dora_magnitude，而不是
             # ComfyUI 使用的 .dora_scale；回退到另一套键名再查一次。
             alternate = denormalize_dora_key(source_key)
             if alternate != source_key:
                 try:
-                    return self._source[alternate]
+                    value = self._source[alternate]
+                    found = True
                 except KeyError:
                     pass
+        if not found:
             raise KeyError(key) from None
+
+        if key.endswith(DORA_SCALE_SUFFIX):
+            value = reshape_dora_scale(value)
+        return value
 
     def __iter__(self) -> Iterator[Any]:
         for key in self._source:

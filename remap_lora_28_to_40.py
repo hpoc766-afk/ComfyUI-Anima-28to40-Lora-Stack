@@ -73,6 +73,20 @@ def denormalize_dora_key(key: str) -> str:
     return key
 
 
+def reshape_dora_scale(value: Any) -> Any:
+    """把 1-D DoRA 幅度向量扩展为 `(dim, 1)`。
+
+    部分训练脚本把幅度向量存成 `(dim,)`，而 ComfyUI 的 `weight_decompose`
+    会按 `(dim, 1)` 的逐行幅度进行广播；不扩展会触发形状广播错误。
+    """
+    try:
+        if value.dim() == 1:
+            return value.unsqueeze(1)
+    except (AttributeError, TypeError):
+        pass
+    return value
+
+
 class LoraRemapError(ValueError):
     """LoRA 结构不符合 Anima 28 层映射要求。"""
 
@@ -131,7 +145,11 @@ def remap_lora_state_dict(
         if new_key in remapped:
             collisions.append(new_key)
             continue
-        remapped[new_key] = value
+        remapped[new_key] = (
+            reshape_dora_scale(value)
+            if key.endswith(DORA_MAGNITUDE_SUFFIX)
+            else value
+        )
 
     if main_block_key_count == 0:
         raise LoraRemapError(
@@ -160,4 +178,5 @@ __all__ = [
     "normalize_dora_key",
     "remap_key",
     "remap_lora_state_dict",
+    "reshape_dora_scale",
 ]

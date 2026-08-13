@@ -1,0 +1,156 @@
+{
+  "source_checkpoint_path": "models/_tmp_anima_aestheticV10_netprefix.safetensors",
+  "output_checkpoint_path": "models\\anima_2.9B_aetheticV10_muted.safetensors",
+  "old_block_count": 28,
+  "new_block_count": 40,
+  "insertion_positions": [
+    2,
+    5,
+    8,
+    11,
+    14,
+    17,
+    21,
+    24,
+    27,
+    30,
+    33,
+    36
+  ],
+  "inserted_to_source": {
+    "2": 1,
+    "5": 3,
+    "8": 5,
+    "11": 7,
+    "14": 9,
+    "17": 11,
+    "21": 14,
+    "24": 16,
+    "27": 18,
+    "30": 20,
+    "33": 22,
+    "36": 24
+  },
+  "zeroed_tensors": [
+    "net.blocks.2.adaln_modulation_self_attn.2.weight",
+    "net.blocks.2.adaln_modulation_cross_attn.2.weight",
+    "net.blocks.2.adaln_modulation_mlp.2.weight",
+    "net.blocks.2.self_attn.output_proj.weight",
+    "net.blocks.2.cross_attn.output_proj.weight",
+    "net.blocks.2.mlp.layer2.weight",
+    "net.blocks.5.adaln_modulation_self_attn.2.weight",
+    "net.blocks.5.adaln_modulation_cross_attn.2.weight",
+    "net.blocks.5.adaln_modulation_mlp.2.weight",
+    "net.blocks.5.self_attn.output_proj.weight",
+    "net.blocks.5.cross_attn.output_proj.weight",
+    "net.blocks.5.mlp.layer2.weight",
+    "net.blocks.8.adaln_modulation_self_attn.2.weight",
+    "net.blocks.8.adaln_modulation_cross_attn.2.weight",
+    "net.blocks.8.adaln_modulation_mlp.2.weight",
+    "net.blocks.8.self_attn.output_proj.weight",
+    "net.blocks.8.cross_attn.output_proj.weight",
+    "net.blocks.8.mlp.layer2.weight",
+    "net.blocks.11.adaln_modulation_self_attn.2.weight",
+    "net.blocks.11.adaln_modulation_cross_attn.2.weight",
+    "net.blocks.11.adaln_modulation_mlp.2.weight",
+    "net.blocks.11.self_attn.output_proj.weight",
+    "net.blocks.11.cross_attn.output_proj.weight",
+    "net.blocks.11.mlp.layer2.weight",
+    "net.blocks.14.adaln_modulation_self_attn.2.weight",
+    "net.blocks.14.adaln_modulation_cross_attn.2.weight",
+    "net.blocks.14.adaln_modulation_mlp.2.weight",
+    "net.blocks.14.self_attn.output_proj.weight",
+    "net.blocks.14.cross_attn.output_proj.weight",
+    "net.blocks.14.mlp.layer2.weight",
+    "net.blocks.17.adaln_modulation_self_attn.2.weight",
+    "net.blocks.17.adaln_modulation_cross_attn.2.weight",
+    "net.blocks.17.adaln_modulation_mlp.2.weight",
+    "net.blocks.17.self_attn.output_proj.weight",
+    "net.blocks.17.cross_attn.output_proj.weight",
+    "net.blocks.17.mlp.layer2.weight",
+    "net.blocks.21.adaln_modulation_self_attn.2.weight",
+    "net.blocks.21.adaln_modulation_cross_attn.2.weight",
+    "net.blocks.21.adaln_modulation_mlp.2.weight",
+    "net.blocks.21.self_attn.output_proj.weight",
+    "net.blocks.21.cross_attn.output_proj.weight",
+    "net.blocks.21.mlp.layer2.weight",
+    "net.blocks.24.adaln_modulation_self_attn.2.weight",
+    "net.blocks.24.adaln_modulation_cross_attn.2.weight",
+    "net.blocks.24.adaln_modulation_mlp.2.weight",
+    "net.blocks.24.self_attn.output_proj.weight",
+    "net.blocks.24.cross_attn.output_proj.weight",
+    "net.blocks.24.mlp.layer2.weight",
+    "net.blocks.27.adaln_modulation_self_attn.2.weight",
+    "net.blocks.27.adaln_modulation_cross_attn.2.weight",
+    "net.blocks.27.adaln_modulation_mlp.2.weight",
+    "net.blocks.27.self_attn.output_proj.weight",
+    "net.blocks.27.cross_attn.output_proj.weight",
+    "net.blocks.27.mlp.layer2.weight",
+    "net.blocks.30.adaln_modulation_self_attn.2.weight",
+    "net.blocks.30.adaln_modulation_cross_attn.2.weight",
+    "net.blocks.30.adaln_modulation_mlp.2.weight",
+    "net.blocks.30.self_attn.output_proj.weight",
+    "net.blocks.30.cross_attn.output_proj.weight",
+    "net.blocks.30.mlp.layer2.weight",
+    "net.blocks.33.adaln_modulation_self_attn.2.weight",
+    "net.blocks.33.adaln_modulation_cross_attn.2.weight",
+    "net.blocks.33.adaln_modulation_mlp.2.weight",
+    "net.blocks.33.self_attn.output_proj.weight",
+    "net.blocks.33.cross_attn.output_proj.weight",
+    "net.blocks.33.mlp.layer2.weight",
+    "net.blocks.36.adaln_modulation_self_attn.2.weight",
+    "net.blocks.36.adaln_modulation_cross_attn.2.weight",
+    "net.blocks.36.adaln_modulation_mlp.2.weight",
+    "net.blocks.36.self_attn.output_proj.weight",
+    "net.blocks.36.cross_attn.output_proj.weight",
+    "net.blocks.36.mlp.layer2.weight"
+  ],
+  "source_architecture_summary": {
+    "checkpoint_path": "models/_tmp_anima_aestheticV10_netprefix.safetensors",
+    "total_params": 2091068928,
+    "total_params_b": 2.091068928,
+    "main_block_count": 28,
+    "llm_adapter_block_count": 6,
+    "model_channels": 2048,
+    "num_heads": 16,
+    "head_dim": 128,
+    "crossattn_emb_channels": 1024,
+    "patch_spatial": 2,
+    "patch_temporal": 1,
+    "latent_channels": 16,
+    "concat_padding_mask": true,
+    "use_llm_adapter": true,
+    "modulation_shapes": {
+      "self_attn": {
+        "proj_in": [
+          256,
+          2048
+        ],
+        "proj_out": [
+          6144,
+          256
+        ]
+      },
+      "cross_attn": {
+        "proj_in": [
+          256,
+          2048
+        ],
+        "proj_out": [
+          6144,
+          256
+        ]
+      },
+      "mlp": {
+        "proj_in": [
+          256,
+          2048
+        ],
+        "proj_out": [
+          6144,
+          256
+        ]
+      }
+    }
+  }
+}

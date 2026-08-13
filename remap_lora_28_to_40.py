@@ -52,6 +52,26 @@ BLOCK_PATTERNS = (
     ),
 )
 
+# ComfyUI 读取 DoRA 幅度向量时使用 `<base>.dora_scale`，而部分 sd-scripts 分叉
+# （例如 Anima 训练脚本）会将其导出为 `<base>.dora_magnitude`。两者含义相同，
+# 都是逐输出行的幅度向量，因此加载时统一归一化为 ComfyUI 的键名。
+DORA_MAGNITUDE_SUFFIX = ".dora_magnitude"
+DORA_SCALE_SUFFIX = ".dora_scale"
+
+
+def normalize_dora_key(key: str) -> str:
+    """把非标准 DoRA 幅度键名归一化为 ComfyUI 的 `.dora_scale`。"""
+    if key.endswith(DORA_MAGNITUDE_SUFFIX):
+        return key[: -len(DORA_MAGNITUDE_SUFFIX)] + DORA_SCALE_SUFFIX
+    return key
+
+
+def denormalize_dora_key(key: str) -> str:
+    """反向恢复 :func:`normalize_dora_key`，用于回查原始 state dict。"""
+    if key.endswith(DORA_SCALE_SUFFIX):
+        return key[: -len(DORA_SCALE_SUFFIX)] + DORA_MAGNITUDE_SUFFIX
+    return key
+
 
 class LoraRemapError(ValueError):
     """LoRA 结构不符合 Anima 28 层映射要求。"""
@@ -73,14 +93,16 @@ def remap_key(
     """重映射单个键；无主干层索引的键保持原样。"""
     match, old_index = find_main_block(key)
     if match is None or old_index is None:
-        return key, None, None
+        return normalize_dora_key(key), None, None
     if old_index not in old_to_new:
         raise LoraRemapError(
             f"键 {key!r} 使用了不支持的主干层 {old_index}；仅支持 0-{OLD_BLOCK_COUNT - 1}"
         )
 
     new_index = old_to_new[old_index]
-    new_key = f"{key[:match.start('idx')]}{new_index}{key[match.end('idx'):]}"
+    new_key = normalize_dora_key(
+        f"{key[:match.start('idx')]}{new_index}{key[match.end('idx'):]}"
+    )
     return new_key, old_index, new_index
 
 
@@ -133,7 +155,9 @@ __all__ = [
     "OLD_BLOCK_COUNT",
     "OLD_TO_NEW",
     "build_old_to_new_map",
+    "denormalize_dora_key",
     "find_main_block",
+    "normalize_dora_key",
     "remap_key",
     "remap_lora_state_dict",
 ]

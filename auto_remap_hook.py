@@ -10,11 +10,15 @@ from typing import Any, Callable
 import comfy.sd
 
 from .remap_lora_28_to_40 import (
+    DORA_SCALE_SUFFIX,
     LoraRemapError,
     NEW_BLOCK_COUNT,
     OLD_BLOCK_COUNT,
     OLD_TO_NEW,
+    denormalize_dora_key,
     find_main_block,
+    normalize_dora_key,
+    reshape_dora_scale,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -94,16 +98,16 @@ def _analyze_lora_key(key: str) -> tuple[int | None, str, str]:
     """Return block index, exposed key, and canonical source key for one key."""
     match, index = find_main_block(key)
     if match is None or index is None:
-        return None, key, key
+        return None, normalize_dora_key(key), key
 
     canonical_source = f"{key[:match.start('idx')]}{index}{key[match.end('idx'):]}"
     if index < OLD_BLOCK_COUNT:
         new_index = OLD_TO_NEW[index]
-        exposed_key = (
+        exposed_key = normalize_dora_key(
             f"{key[:match.start('idx')]}{new_index}{key[match.end('idx'):]}"
         )
     else:
-        exposed_key = key
+        exposed_key = normalize_dora_key(key)
     return index, exposed_key, canonical_source
 
 
@@ -143,10 +147,27 @@ class RemappedLoraView(Mapping[Any, Any]):
             source_key = _source_key_for_exposed_key(key)
         if source_key is None:
             raise KeyError(key)
+
+        found = False
         try:
-            return self._source[source_key]
+            value = self._source[source_key]
+            found = True
         except KeyError:
+            # 原始 LoRA 可能把 DoRA 幅度向量存为 .dora_magnitude，而不是
+            # ComfyUI 使用的 .dora_scale；回退到另一套键名再查一次。
+            alternate = denormalize_dora_key(source_key)
+            if alternate != source_key:
+                try:
+                    value = self._source[alternate]
+                    found = True
+                except KeyError:
+                    pass
+        if not found:
             raise KeyError(key) from None
+
+        if key.endswith(DORA_SCALE_SUFFIX):
+            value = reshape_dora_scale(value)
+        return value
 
     def __iter__(self) -> Iterator[Any]:
         for key in self._source:

@@ -153,6 +153,41 @@ class RemapCoreTests(unittest.TestCase):
         remapped = self.core.remap_lora_state_dict(state)
         self.assertIs(remapped["ss.some_global_value"], passthrough)
 
+    def test_dora_magnitude_keys_are_renamed_to_dora_scale(self):
+        magnitude = object()
+        state = {
+            "lora_unet_blocks_2_cross_attn_q_proj.dora_magnitude": magnitude,
+            "lora_unet_blocks_2_cross_attn_q_proj.lora_down.weight": object(),
+        }
+        remapped = self.core.remap_lora_state_dict(state)
+        self.assertIs(
+            remapped["lora_unet_blocks_3_cross_attn_q_proj.dora_scale"],
+            magnitude,
+        )
+        self.assertNotIn(
+            "lora_unet_blocks_3_cross_attn_q_proj.dora_magnitude",
+            remapped,
+        )
+        self.assertIn(
+            "lora_unet_blocks_3_cross_attn_q_proj.lora_down.weight",
+            remapped,
+        )
+
+    def test_dora_magnitude_vector_is_reshaped_to_2d(self):
+        class FakeVector:
+            def dim(self):
+                return 1
+
+            def unsqueeze(self, dim):
+                self.unsqueeze_dim = dim
+                return "reshaped"
+
+        vector = FakeVector()
+        state = {"lora_unet_blocks_2_x.dora_magnitude": vector}
+        remapped = self.core.remap_lora_state_dict(state)
+        self.assertEqual(remapped["lora_unet_blocks_3_x.dora_scale"], "reshaped")
+        self.assertEqual(vector.unsqueeze_dim, 1)
+
     def test_invalid_high_layer_raises(self):
         with self.assertRaisesRegex(self.core.LoraRemapError, "不支持的主干层 28"):
             self.core.remap_lora_state_dict(
@@ -259,6 +294,27 @@ class AutoRemapHookTests(unittest.TestCase):
             value,
         )
         self.assertNotIn("lora_unet_blocks_2_x.lora_down.weight", prepared)
+
+    def test_lazy_view_renames_dora_magnitude_to_dora_scale(self):
+        class FakeVector:
+            def dim(self):
+                return 1
+
+            def unsqueeze(self, dim):
+                self.unsqueeze_dim = dim
+                return "reshaped"
+
+        magnitude = FakeVector()
+        state = {
+            "lora_unet_blocks_2_x.dora_magnitude": magnitude,
+            "lora_unet_blocks_2_x.lora_down.weight": object(),
+        }
+        prepared = self.hook.prepare_lora_for_anima_40(state)
+        self.assertIsInstance(prepared, self.hook.RemappedLoraView)
+        self.assertIn("lora_unet_blocks_3_x.dora_scale", prepared)
+        self.assertEqual(prepared["lora_unet_blocks_3_x.dora_scale"], "reshaped")
+        self.assertEqual(magnitude.unsqueeze_dim, 1)
+        self.assertNotIn("lora_unet_blocks_3_x.dora_magnitude", set(prepared))
 
     def test_lazy_view_detects_leading_zero_collision(self):
         with self.assertRaisesRegex(self.hook.LoraRemapError, "collision.safetensors"):
@@ -443,10 +499,10 @@ class BackendTests(unittest.TestCase):
             (self.root / name).write_bytes(b"stub")
 
         states = {
-            str(self.root / "a.safetensors"): {
+            str((self.root / "a.safetensors").resolve()): {
                 "lora_unet_blocks_0_self_attn_q_proj.alpha": "a"
             },
-            str(self.root / "b.safetensors"): {
+            str((self.root / "b.safetensors").resolve()): {
                 "lora_unet_blocks_1_self_attn_q_proj.alpha": "b"
             },
         }

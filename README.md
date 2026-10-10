@@ -19,8 +19,10 @@ Automatic behavior:
 - `blocks_40` or higher, or a LoRA with no recognizable Anima backbone keys, causes a strict error.
 - Non-Anima models, non-40-layer Anima models, and CLIP-only calls pass through unchanged.
 - Both standard and bypass LoRA loading APIs are covered.
-- Automatic 28-layer remapping uses a read-only lazy `Mapping` view: the original state dict and Tensor objects are reused instead of materializing a second remapped dictionary.
-- A bounded 4,096-entry LRU caches key-string analysis only; it never caches a LoRA state dict or Tensor.
+- Key validation and 28→40 remapping finish once during each LoRA load, before compilation. The loader receives a plain `dict`; no lazy key view or remapping callback remains in forward execution. Tensor storage is shared without cloning; DoRA magnitude keys are normalized to `.dora_scale`, with one-dimensional magnitudes reshaped to `(dim, 1)` during loading.
+- A bounded 4,096-entry LRU caches key-string analysis only at load time; it never caches a LoRA state dict or Tensor.
+
+For compiled workflows, connect `MODEL loader → LoRA loader(s) / Power Stack → torch.compile node → sampler`. The Power Stack reuses its validated mapped dictionary while the source file size and modification time remain unchanged. Changing a LoRA or the compiled model can still require recompilation.
 
 Automatic compatibility is limited to loaders that call `comfy.sd.load_lora_for_models` or `comfy.sd.load_bypass_lora_for_models`. Nodes that patch `ModelPatcher` directly, or capture the original function before this extension loads, are not guaranteed to be intercepted.
 
@@ -140,6 +142,8 @@ Run the unit tests from the plugin directory:
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+The tests include a CPU `torch.compile(fullgraph=True)` regression using a counting backend: key analysis is forbidden after preparation, results match eager execution, and repeated calls use one graph. PyTorch is required to run this test; it is skipped when PyTorch is unavailable. This does not benchmark CUDA/Inductor or certify a complete ComfyUI workflow.
 
 Check the frontend extension syntax with Node.js when available:
 

@@ -274,49 +274,139 @@ class AutoRemapHookTests(unittest.TestCase):
         self.assertIs(prepared["lora_unet_blocks_39_x.lora_down.weight"], value)
         self.assertIs(prepared["ss.global"], passthrough)
 
-    def test_lazy_view_reuses_source_mapping_and_exposes_remapped_keys(self):
+    def test_materialized_dict_exposes_remapped_keys_without_later_analysis(self):
         value = object()
         state = {
             "lora_unet_blocks_2_x.lora_down.weight": value,
             "ss.global": object(),
         }
+        with patch.object(
+            self.hook, "_analyze_lora_key", wraps=self.hook._analyze_lora_key
+        ) as analyze:
+            prepared = self.hook.prepare_lora_for_anima_40(state)
+            self.assertEqual(analyze.call_count, len(state))
+
+        self.assertIs(type(prepared), dict)
+        self.assertIsNot(prepared, state)
+        with patch.object(
+            self.hook, "_analyze_lora_key", side_effect=AssertionError("late key analysis")
+        ):
+            self.assertEqual(len(prepared), len(state))
+            self.assertEqual(
+                set(prepared),
+                {"lora_unet_blocks_3_x.lora_down.weight", "ss.global"},
+            )
+            self.assertIs(
+                prepared.get("lora_unet_blocks_3_x.lora_down.weight"), value
+            )
+            self.assertNotIn("lora_unet_blocks_2_x.lora_down.weight", prepared)
+
+    def test_preparation_detaches_custom_mapping_access(self):
+        from collections.abc import Mapping
+
+        class SourceMapping(Mapping):
+            def __init__(self):
+                self.state = {"lora_unet_blocks_2_x.alpha": object()}
+                self.readable = True
+
+            def __iter__(self):
+                if not self.readable:
+                    raise AssertionError("late source access")
+                return iter(self.state)
+
+            def __getitem__(self, key):
+                if not self.readable:
+                    raise AssertionError("late source access")
+                return self.state[key]
+
+            def __len__(self):
+                return len(self.state)
+
+        state = SourceMapping()
         prepared = self.hook.prepare_lora_for_anima_40(state)
+        state.readable = False
+        self.assertIs(type(prepared), dict)
+        self.assertIs(prepared["lora_unet_blocks_3_x.alpha"], state.state["lora_unet_blocks_2_x.alpha"])
 
-        self.assertIsInstance(prepared, self.hook.RemappedLoraView)
-        self.assertIs(prepared._source, state)
-        self.assertEqual(len(prepared), len(state))
-        self.assertEqual(
-            set(prepared),
-            {"lora_unet_blocks_3_x.lora_down.weight", "ss.global"},
-        )
-        self.assertIs(
-            prepared.get("lora_unet_blocks_3_x.lora_down.weight"),
-            value,
-        )
-        self.assertNotIn("lora_unet_blocks_2_x.lora_down.weight", prepared)
+    def test_prepared_lora_fullgraph_has_no_key_analysis_or_recompilation(self):
+        try:
+            import torch
+        except ModuleNotFoundError:
+            self.skipTest("torch is required for the fullgraph regression test")
 
-    def test_lazy_view_renames_dora_magnitude_to_dora_scale(self):
+        down = torch.arange(8, dtype=torch.float32).reshape(2, 4) / 8
+        up = torch.arange(8, dtype=torch.float32).reshape(4, 2) / 8
+        magnitude = torch.arange(4, dtype=torch.float32) + 1
+        prepared = self.hook.prepare_lora_for_anima_40(
+            {
+                "lora_unet_blocks_2_x.lora_down.weight": down,
+                "lora_unet_blocks_2_x.lora_up.weight": up,
+                "lora_unet_blocks_2_x.dora_magnitude": magnitude,
+            }
+        )
+        compile_count = 0
+
+        def backend(graph, example_inputs):
+            nonlocal compile_count
+            compile_count += 1
+            return graph.forward
+
+        def forward(x):
+            hidden = torch.nn.functional.linear(
+                x, prepared["lora_unet_blocks_3_x.lora_down.weight"]
+            )
+            return x + torch.nn.functional.linear(
+                hidden, prepared["lora_unet_blocks_3_x.lora_up.weight"]
+            ) * prepared["lora_unet_blocks_3_x.dora_scale"].transpose(0, 1)
+
+        inputs = [torch.ones(1, 4), torch.full((1, 4), 2.0)]
+        expected = [forward(x) for x in inputs]
+        with patch.object(
+            self.hook, "_analyze_lora_key", side_effect=AssertionError("compiled key analysis")
+        ), patch.object(
+            self.hook, "is_anima_40_model", side_effect=AssertionError("compiled model validation")
+        ):
+            compiled = torch.compile(forward, backend=backend, fullgraph=True)
+            for x, reference in zip(inputs, expected):
+                torch.testing.assert_close(compiled(x), reference)
+        self.assertEqual(compile_count, 1)
+
+    def test_preparation_normalizes_dora_once_before_key_access(self):
         class FakeVector:
             def dim(self):
                 return 1
 
             def unsqueeze(self, dim):
                 self.unsqueeze_dim = dim
+                self.calls = getattr(self, "calls", 0) + 1
                 return "reshaped"
 
         magnitude = FakeVector()
-        state = {
-            "lora_unet_blocks_2_x.dora_magnitude": magnitude,
-            "lora_unet_blocks_2_x.lora_down.weight": object(),
-        }
-        prepared = self.hook.prepare_lora_for_anima_40(state)
-        self.assertIsInstance(prepared, self.hook.RemappedLoraView)
-        self.assertIn("lora_unet_blocks_3_x.dora_scale", prepared)
-        self.assertEqual(prepared["lora_unet_blocks_3_x.dora_scale"], "reshaped")
+        prepared = self.hook.prepare_lora_for_anima_40(
+            {
+                "lora_unet_blocks_2_x.dora_magnitude": magnitude,
+                "lora_unet_blocks_2_x.lora_down.weight": object(),
+            }
+        )
+        self.assertIs(type(prepared), dict)
+        self.assertEqual(magnitude.calls, 1)
         self.assertEqual(magnitude.unsqueeze_dim, 1)
-        self.assertNotIn("lora_unet_blocks_3_x.dora_magnitude", set(prepared))
+        with patch.object(self.hook, "reshape_dora_scale", side_effect=AssertionError("late reshape")):
+            for _ in range(2):
+                self.assertEqual(prepared["lora_unet_blocks_3_x.dora_scale"], "reshaped")
+        self.assertEqual(magnitude.calls, 1)
+        self.assertNotIn("lora_unet_blocks_3_x.dora_magnitude", prepared)
 
-    def test_lazy_view_detects_leading_zero_collision(self):
+    def test_dora_alias_collision_is_rejected_before_loading(self):
+        with self.assertRaisesRegex(self.hook.LoraRemapError, "冲突"):
+            self.hook.prepare_lora_for_anima_40(
+                {
+                    "lora_unet_blocks_2_x.dora_magnitude": object(),
+                    "lora_unet_blocks_2_x.dora_scale": object(),
+                }
+            )
+
+    def test_materialization_detects_leading_zero_collision(self):
         with self.assertRaisesRegex(self.hook.LoraRemapError, "collision.safetensors"):
             self.hook.prepare_lora_for_anima_40(
                 {
@@ -362,6 +452,30 @@ class AutoRemapHookTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(self.hook.LoraRemapError, r"blocks_0.*blocks_39"):
             self.hook.prepare_lora_for_anima_40({"metadata.only": object()})
+
+    def test_invalid_keys_fail_before_original_loader_runs(self):
+        calls = []
+
+        def original(*args, **kwargs):
+            calls.append((args, kwargs))
+            return args[0], args[1]
+
+        self.comfy_sd.load_lora_for_models = original
+        self.hook.install_global_lora_hooks()
+        for state in (
+            {"lora_unet_blocks_40_x.alpha": object()},
+            {"metadata.only": object()},
+            {
+                "lora_unet_blocks_0_x.alpha": object(),
+                "lora_unet_blocks_00_x.alpha": object(),
+            },
+        ):
+            with self.subTest(keys=list(state)):
+                with self.assertRaises(self.hook.LoraRemapError):
+                    self.comfy_sd.load_lora_for_models(
+                        self.make_model(), None, state, 1.0, 0.0
+                    )
+        self.assertEqual(calls, [])
 
     def test_standard_hook_remaps_and_preserves_all_arguments(self):
         calls = []
@@ -552,15 +666,21 @@ class BackendTests(unittest.TestCase):
             "lora_1": {"on": True, "lora": "a.safetensors", "strength": 1.0}
         }
 
-        node.load_loras(object(), None, **kwargs)
-        node.load_loras(object(), None, **kwargs)
-        self.assertEqual(load_count, 1)
+        with patch.object(
+            self.backend, "remap_lora_state_dict",
+            wraps=self.backend.remap_lora_state_dict,
+        ) as remap:
+            node.load_loras(object(), None, **kwargs)
+            node.load_loras(object(), None, **kwargs)
+            self.assertEqual(load_count, 1)
+            self.assertEqual(remap.call_count, 1)
 
-        path.write_bytes(b"second-version")
-        future = time.time_ns() + 10_000_000
-        os.utime(path, ns=(future, future))
-        node.load_loras(object(), None, **kwargs)
-        self.assertEqual(load_count, 2)
+            path.write_bytes(b"second-version")
+            future = time.time_ns() + 10_000_000
+            os.utime(path, ns=(future, future))
+            node.load_loras(object(), None, **kwargs)
+            self.assertEqual(load_count, 2)
+            self.assertEqual(remap.call_count, 2)
 
 
 if __name__ == "__main__":

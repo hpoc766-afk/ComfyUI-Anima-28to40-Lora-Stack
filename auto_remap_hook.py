@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import functools
 import logging
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from typing import Any, Callable
 
 import comfy.sd
@@ -15,7 +15,6 @@ from .remap_lora_28_to_40 import (
     NEW_BLOCK_COUNT,
     OLD_BLOCK_COUNT,
     OLD_TO_NEW,
-    denormalize_dora_key,
     find_main_block,
     normalize_dora_key,
     reshape_dora_scale,
@@ -26,7 +25,6 @@ _HOOK_MARKER = "__anima_28_to_40_auto_hook__"
 _ORIGINAL_ATTR = "__anima_28_to_40_original__"
 _RUNTIME_SOURCE = "<ComfyUI runtime LoRA>"
 _KEY_CACHE_SIZE = 4096
-_NEW_TO_OLD = {new_index: old_index for old_index, new_index in OLD_TO_NEW.items()}
 
 _original_load_lora_for_models: Callable[..., Any] | None = None
 _original_load_bypass_lora_for_models: Callable[..., Any] | None = None
@@ -94,13 +92,12 @@ def _source_name(metadata: Any) -> str:
 
 
 @functools.lru_cache(maxsize=_KEY_CACHE_SIZE)
-def _analyze_lora_key(key: str) -> tuple[int | None, str, str]:
-    """Return block index, exposed key, and canonical source key for one key."""
+def _analyze_lora_key(key: str) -> tuple[int | None, str]:
+    """Return block index and destination key during load-time preparation."""
     match, index = find_main_block(key)
     if match is None or index is None:
-        return None, normalize_dora_key(key), key
+        return None, normalize_dora_key(key)
 
-    canonical_source = f"{key[:match.start('idx')]}{index}{key[match.end('idx'):]}"
     if index < OLD_BLOCK_COUNT:
         new_index = OLD_TO_NEW[index]
         exposed_key = normalize_dora_key(
@@ -108,121 +105,57 @@ def _analyze_lora_key(key: str) -> tuple[int | None, str, str]:
         )
     else:
         exposed_key = normalize_dora_key(key)
-    return index, exposed_key, canonical_source
-
-
-@functools.lru_cache(maxsize=_KEY_CACHE_SIZE)
-def _source_key_for_exposed_key(key: str) -> str | None:
-    """Translate a 40-layer key back to the canonical 28-layer source key."""
-    match, new_index = find_main_block(key)
-    if match is None or new_index is None:
-        return key
-
-    old_index = _NEW_TO_OLD.get(new_index)
-    if old_index is None:
-        return None
-    return f"{key[:match.start('idx')]}{old_index}{key[match.end('idx'):]}"
-
-
-class RemappedLoraView(Mapping[Any, Any]):
-    """Read-only 40-layer view over a 28-layer LoRA without copying its dict."""
-
-    __slots__ = ("_source", "_source_aliases")
-
-    def __init__(
-        self,
-        source: Mapping[Any, Any],
-        source_aliases: Mapping[str, str] | None = None,
-    ) -> None:
-        self._source = source
-        # Only malformed leading-zero aliases need storage; normal LoRAs keep this empty.
-        self._source_aliases = dict(source_aliases or {})
-
-    def __getitem__(self, key: Any) -> Any:
-        if not isinstance(key, str):
-            return self._source[key]
-
-        source_key = self._source_aliases.get(key)
-        if source_key is None:
-            source_key = _source_key_for_exposed_key(key)
-        if source_key is None:
-            raise KeyError(key)
-
-        found = False
-        try:
-            value = self._source[source_key]
-            found = True
-        except KeyError:
-            # 原始 LoRA 可能把 DoRA 幅度向量存为 .dora_magnitude，而不是
-            # ComfyUI 使用的 .dora_scale；回退到另一套键名再查一次。
-            alternate = denormalize_dora_key(source_key)
-            if alternate != source_key:
-                try:
-                    value = self._source[alternate]
-                    found = True
-                except KeyError:
-                    pass
-        if not found:
-            raise KeyError(key) from None
-
-        if key.endswith(DORA_SCALE_SUFFIX):
-            value = reshape_dora_scale(value)
-        return value
-
-    def __iter__(self) -> Iterator[Any]:
-        for key in self._source:
-            if isinstance(key, str):
-                yield _analyze_lora_key(key)[1]
-            else:
-                yield key
-
-    def __len__(self) -> int:
-        return len(self._source)
+    return index, exposed_key
 
 
 def prepare_lora_for_anima_40(
     lora: Mapping[Any, Any],
     *,
     metadata: Any = None,
-) -> Mapping[Any, Any]:
-    """Classify a LoRA, lazily remapping 28-layer data for a 40-layer model."""
+) -> dict[Any, Any]:
+    """Validate and materialize keys once at LoRA load time, before compilation.
+
+    Only dictionary entries are copied; Tensor storage remains shared, including
+    DoRA reshape views. Downstream patching and compiled forwards never need
+    this plugin's key lookup logic.
+    """
     if not isinstance(lora, Mapping):
         raise TypeError(
             f"LoRA state dict 必须是映射，"
             f"实际为 {type(lora).__name__}"
         )
 
+    # Normalize custom mappings at this boundary; never pass lazy key access on.
+    if type(lora) is not dict:
+        lora = dict(lora)
+
     source_name = _source_name(metadata)
     found_main_block = False
     native_40_layer = False
     highest_unsupported: int | None = None
-    aliases: dict[str, str] = {}
+    prepared: dict[Any, Any] = {}
     collisions: list[str] = []
 
-    for key in lora:
-        if not isinstance(key, str):
-            continue
-        index, exposed_key, canonical_source = _analyze_lora_key(key)
-        if index is None:
-            continue
-        found_main_block = True
-        if index >= NEW_BLOCK_COUNT:
-            highest_unsupported = (
-                index
-                if highest_unsupported is None
-                else max(highest_unsupported, index)
-            )
-        elif index >= OLD_BLOCK_COUNT:
-            native_40_layer = True
-        elif canonical_source != key:
-            # Only malformed leading-zero aliases need per-view storage.
-            existing_alias = aliases.get(exposed_key)
-            if canonical_source in lora or (
-                existing_alias is not None and existing_alias != key
-            ):
-                collisions.append(exposed_key)
-            else:
-                aliases[exposed_key] = key
+    for key, value in lora.items():
+        index, exposed_key = (
+            _analyze_lora_key(key) if isinstance(key, str) else (None, key)
+        )
+        if index is not None:
+            found_main_block = True
+            if index >= NEW_BLOCK_COUNT:
+                highest_unsupported = (
+                    index
+                    if highest_unsupported is None
+                    else max(highest_unsupported, index)
+                )
+            elif index >= OLD_BLOCK_COUNT:
+                native_40_layer = True
+        if exposed_key in prepared:
+            collisions.append(exposed_key)
+        else:
+            if isinstance(exposed_key, str) and exposed_key.endswith(DORA_SCALE_SUFFIX):
+                value = reshape_dora_scale(value)
+            prepared[exposed_key] = value
 
     if not found_main_block:
         raise LoraRemapError(
@@ -250,7 +183,7 @@ def prepare_lora_for_anima_40(
             f"LoRA {source_name} 映射后发生键名冲突：\n  {preview}{suffix}"
         )
 
-    return RemappedLoraView(lora, aliases)
+    return prepared
 
 
 def _argument(args: tuple[Any, ...], kwargs: dict[str, Any], index: int, name: str) -> Any:
@@ -326,7 +259,7 @@ def install_global_lora_hooks() -> bool:
     installed = standard_installed or bypass_installed
     if installed:
         _LOGGER.info(
-            "Anima 28-to-40 global LoRA auto-remap enabled with lazy key mapping."
+            "Anima 28-to-40 global LoRA auto-remap enabled with load-time key validation."
         )
     return installed
 
@@ -347,7 +280,6 @@ def get_original_load_bypass_lora_for_models() -> Callable[..., Any] | None:
 
 
 __all__ = [
-    "RemappedLoraView",
     "get_original_load_bypass_lora_for_models",
     "get_original_load_lora_for_models",
     "install_global_lora_hooks",

@@ -19,8 +19,10 @@
 - 含 `blocks_40` 或更高层号，或没有可识别 Anima 主模型层键的 LoRA 会严格报错。
 - 非 Anima 模型、不是 40 层的 Anima 模型以及纯 CLIP 调用完全透传。
 - 标准和 Bypass LoRA Loader 均支持自动映射。
-- 28 层自动映射使用只读懒加载 `Mapping` 视图，复用原 state dict 与 Tensor，不再物化第二份完整映射字典。
-- 仅使用最多 4096 项的有界 LRU 缓存保存键字符串分析结果，不缓存 LoRA state dict 或 Tensor。
+- 每次加载 LoRA 时一次完成 key 校验与 28→40 映射，发生在编译前。交给 Loader 的是普通 `dict`，前向执行中没有懒 key 视图或映射回调；Tensor 存储仍复用，不执行 clone。DoRA 的幅度键在加载时转换为 `.dora_scale`，一维幅度向量在此阶段调整为 `(dim, 1)` 视图。
+- 仅在加载阶段使用最多 4096 项的有界 LRU 缓存保存键字符串分析结果，不缓存 LoRA state dict 或 Tensor。
+
+使用编译工作流时，按 `MODEL 加载 → LoRA Loader / Power Stack → torch.compile 节点 → 采样器` 连接。Power Stack 在源文件大小和修改时间不变时复用已校验的映射字典。切换 LoRA 或改变被编译模型本身，仍可能需要重新编译。
 
 自动兼容范围是调用 `comfy.sd.load_lora_for_models` 或 `comfy.sd.load_bypass_lora_for_models` 的加载节点。直接操作 `ModelPatcher`，或在本插件加载前保存了旧函数引用的第三方节点，不保证自动转换。
 
@@ -141,6 +143,8 @@ ComfyUI/custom_nodes/ComfyUI-Anima-28to40-Lora-Stack
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+测试包含 CPU `torch.compile(fullgraph=True)` 回归：准备完成后禁止再次解析 key，结果与 eager 一致，重复调用只编译一个图。该测试需要 PyTorch，缺少 PyTorch 时跳过；它不测 CUDA/Inductor 性能，也不代表完整 ComfyUI 工作流已验收。
 
 如果系统已安装 Node.js，可检查前端扩展语法：
 
